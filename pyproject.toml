@@ -158,6 +158,7 @@ audio = [
 ]
 # Additional dependencies are required on top of JAX Stable Stack for TPU.
 # The dependencies included in stable stack can be found at us-docker.pkg.dev/cloud-tpu-images/jax-stable-stack/tpu.
+# Below is the additional dependencies on top of JAX Stable Stack 0.4.35
 jax_stable_stack_tpu = [
     "importlab==0.7",  # breaks pytype on 0.8
     "nltk==3.7",  # for text preprocessing
@@ -165,11 +166,11 @@ jax_stable_stack_tpu = [
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    "tensorflow_text==2.16.1; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
+    "tensorflow_text==2.18.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.11.0",
-    "seqio==0.0.18",  # used for inputs
+    "seqio==0.0.19",  # used for inputs
     "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
 ]
 
