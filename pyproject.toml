@@ -159,7 +159,7 @@ audio = [
 # Additional dependencies are required on top of JAX Stable Stack for TPU.
 # The dependencies included in stable stack can be found at us-docker.pkg.dev/cloud-tpu-images/jax-stable-stack/tpu.
 # Below is the additional dependencies on top of JAX Stable Stack 0.4.35
-jax_stable_stack_tpu = [
+jax_stable_stack = [
     "importlab==0.7",  # breaks pytype on 0.8
     "nltk==3.7",  # for text preprocessing
     "portpicker",
