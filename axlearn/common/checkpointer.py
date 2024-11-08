@@ -841,7 +841,7 @@ class Checkpointer(BaseCheckpointer):
         # If > 0, keeps at least one checkpoint every N steps.
         keep_every_n_steps: Optional[int] = None
         # Interval between garbage collection runs.
-        gc_loop_interval_seconds: float = 60
+        gc_loop_interval_seconds: float = 600000
         # A config that instantiates to a StateStorage.
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
         # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
