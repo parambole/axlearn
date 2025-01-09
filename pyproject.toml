@@ -173,6 +173,7 @@ jax_stable_stack = [
     "typing-extensions==4.11.0",
     "seqio==0.0.19",  # used for inputs
     "prefixed==0.7.1", # For formatting file sizes, param counts, etc.
+    "einops==0.8.0",
 ]
 
 [tool.flit.module]
