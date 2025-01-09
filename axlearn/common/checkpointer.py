@@ -94,6 +94,11 @@ def parse_step_from_dir(step_dir: str) -> int:
     return int(step_dir[-STEP_NUM_DIGITS:])
 
 
+def build_step_dir(base_dir: str, *, step: int) -> str:
+    """Returns the path of checkpoint at `step` under `base_dir`."""
+    return os.path.join(base_dir, f"{STEP_PREFIX}_{step:0{STEP_NUM_DIGITS}d}")
+
+
 def check_state_structure(
     ckpt_structure: list[tuple[str, Any]],
     target_structure: list[tuple[str, Any]],
@@ -154,8 +159,12 @@ def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
     Temporary dir will be deleted after the upload is complete.
     """
     src_dir = src_dir_handle.name
-    fs.makedirs(dst_dir)
-    for item in fs.listdir(src_dir):
+    src_files = fs.listdir(src_dir)
+    # src_files will be empty if there are no tf savables (i.e., don't have any tf state to save).
+    # In this case, do not create empty dst_dirs.
+    if len(src_files):
+        fs.makedirs(dst_dir)
+    for item in src_files:
         src_file = os.path.join(src_dir, item)
         dst_file = os.path.join(dst_dir, item)
         assert not fs.isdir(src_file)
@@ -364,10 +373,13 @@ class TensorStoreStateStorage(StateStorage):
             timeout_secs: Barrier timeout in seconds.
             max_data_shard_degree: Max sharding degree of model weights along data-parallel axis.
                 `None` and `1` means no sharding. `-1` means fully shard along data-parallel
-                replicas. `>1` means custom sharding degree (currently not implemented).
+                replicas. `>1` means custom sharding degree and should almost always be a power
+                of 2.
             max_concurrent_gb: Max concurrent shards (in GB) to write.
             max_concurrent_restore_gb: Max concurrent shards (in GB) to read during checkpoint
                 restore. `None` or `0` means using a default value of 32GB.
+            shard_threshold_bytes: Threshold for a array shard to be data-sharded. A value of None
+                or <= 0 means always data-shard according to max_data_shard_degree.
         """
 
         timeout_secs: float = 3600
@@ -375,6 +387,7 @@ class TensorStoreStateStorage(StateStorage):
         # TODO(hanzhi-zhou): rename this to max_concurrent_save_gb.
         max_concurrent_gb: Optional[int] = None
         max_concurrent_restore_gb: Optional[int] = None
+        shard_threshold_bytes: Optional[int] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -386,8 +399,14 @@ class TensorStoreStateStorage(StateStorage):
                 max_concurrent_gb=cfg.max_concurrent_gb,
                 timeout_secs=cfg.timeout_secs,
                 max_data_shard_degree=cfg.max_data_shard_degree,
+                shard_threshold_bytes=cfg.shard_threshold_bytes,
             )
         else:
+            if cfg.shard_threshold_bytes is not None:
+                raise ValueError(
+                    f"shard_threshold_bytes is set to {cfg.shard_threshold_bytes}, but "
+                    "max_data_shard_degree is not set. It will not take any effect."
+                )
             self._manager = GlobalAsyncCheckpointManager(timeout_secs=cfg.timeout_secs)
         if cfg.max_concurrent_restore_gb is not None and cfg.max_concurrent_restore_gb <= 0:
             raise ValueError(
@@ -718,6 +737,8 @@ class BaseCheckpointer(Module):
             every_n_steps_policy
         )
 
+    # TODO(hanzhi-zhou): deprecate all checkpoint_paths related class methods in favor of
+    # checkpoint_steps.
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """Returns complete checkpoint paths under base dir.
@@ -741,8 +762,31 @@ class BaseCheckpointer(Module):
             The path to the checkpoint directory under base_dir with the highest step count.
             The checkpoint is guaranteed to be complete.
         """
+        logging.log_first_n(
+            logging.WARNING,
+            msg="latest_checkpoint_path is deprecated. Use latest_checkpoint_step instead.",
+            n=1,
+        )
         # Note: checkpoint_paths should already filter incomplete checkpoints.
         return sorted(cls.checkpoint_paths(base_dir)).pop()
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir: str) -> list[int]:
+        """Returns complete checkpoint steps under base dir.
+
+        Args:
+            base_dir: Path to checkpoints dir.
+
+        Returns:
+            A list of committed checkpoint steps. Incomplete checkpoints are dropped.
+        """
+        raise NotImplementedError(cls)
+
+    @classmethod
+    def latest_checkpoint_step(cls, base_dir: str) -> int:
+        """Returns the most recent (highest step count) checkpoint step under base dir."""
+        # Note: checkpoint_steps should already filter incomplete checkpoints.
+        return max(cls.checkpoint_steps(base_dir))
 
     def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -850,7 +894,6 @@ class Checkpointer(BaseCheckpointer):
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
-
         # The default checkpointer commits under "<base_dir>/<step_prefix>_<step>/index". Using a
         # concurrent `exists` check for the index file can be several times faster than `glob` on
         # gcs when there are many checkpoint files, even if using a "native" solution like
@@ -866,6 +909,10 @@ class Checkpointer(BaseCheckpointer):
         with futures.ThreadPoolExecutor() as pool:
             index_exists = pool.map(fs.exists, paths)
         return [os.path.dirname(path) for path, committed in zip(paths, index_exists) if committed]
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir: str) -> list[int]:
+        return [parse_step_from_dir(path) for path in cls.checkpoint_paths(base_dir)]
 
     @classmethod
     def cleanup_checkpoint(cls, ckpt_dir: str, *, sync: bool = True):
@@ -939,7 +986,7 @@ class Checkpointer(BaseCheckpointer):
     def ckpt_dir(self, step: int) -> str:
         """Obtains the checkpoint dir for the given step."""
         cfg: Checkpointer.Config = self.config
-        return os.path.join(cfg.dir, f"{STEP_PREFIX}_{step:0{STEP_NUM_DIGITS}d}")
+        return build_step_dir(cfg.dir, step=step)
 
     def save(
         self, *, step: int, state: NestedTensor, evaler_summaries: Optional[dict[str, Any]] = None
@@ -954,7 +1001,6 @@ class Checkpointer(BaseCheckpointer):
         if step < 0 or step >= 10**8:
             raise ValueError(f"Out-of-range: {step}")
         ckpt_dir = self.ckpt_dir(step)
-        self.cleanup_checkpoint(ckpt_dir)
         self._storage.save_to_dir(
             step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
         )

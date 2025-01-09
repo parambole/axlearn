@@ -21,9 +21,9 @@ from axlearn.common.attention import (
     MultiheadAttention,
     TransformerAttentionLayer,
     apply_attention_logit_biases,
-    make_segment_mask,
     softmax_with_biases,
 )
+from axlearn.common.attention_bias import make_segment_mask
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, config_class
 from axlearn.common.layers import get_stochastic_depth_linear_rate
@@ -229,7 +229,7 @@ class WindowedAttention(MultiheadAttention):
             attention_logit_biases = attention_logit_biases[:, None, :, :]
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
-        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())

@@ -2,6 +2,7 @@
 
 """Tests common utils."""
 
+import contextlib
 import dataclasses
 import enum
 import sys
@@ -21,7 +22,7 @@ from jax import numpy as jnp
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
-from axlearn.common import learner, optimizers, serialization, struct
+from axlearn.common import learner, optimizers, serialization, struct, utils
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_class, config_for_function, similar_names
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
@@ -75,6 +76,7 @@ from axlearn.common.utils import (
     set_recursively,
     split_prng_key,
     tree_paths,
+    validate_contains_paths,
     validate_float_dtype,
     vectorized_tree_map,
     with_sharding_constraint,
@@ -760,6 +762,19 @@ class TreeUtilsTest(TestCase):
             check_jax_type(kwargs={"key": "1"})
         with self.assertRaisesRegex(ValueError, "^Argument key has leaf with non-JAX type"):
             check_jax_type(pretty_named_args={"key": "1"})
+
+    @parameterized.parameters(
+        dict(lengths=[3, 4], dtype=None, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[3, 4], dtype=jnp.int32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[3, 4], dtype=jnp.float32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[[3], [4]], dtype=jnp.int32, expected=[[[1, 1, 1, 0, 0]], [[1, 1, 1, 1, 0]]]),
+        dict(lengths=[[3, 4]], dtype=jnp.int32, expected=[[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]]),
+    )
+    def test_sequence_mask(self, lengths, dtype, expected):
+        max_len = 5
+        mask = utils.sequence_mask(lengths=jnp.array(lengths), max_len=max_len, dtype=dtype)
+        expected = jnp.array(expected).astype(dtype if dtype else jnp.int32)
+        self.assertNestedAllClose(mask, expected)
 
 
 class SimilarNamesTest(TestCase):
@@ -1762,6 +1777,31 @@ class HostToGlobalArrayTest(TestCase):
         # Check that contents are as expected.
         expected = jnp.arange(0, process_count, 2, dtype=batch.dtype)[:, None]
         self.assertNestedEqual(expected, replicate_to_local_data(batch))
+
+
+class ValidateContainsPathsTest(TestCase):
+    @parameterized.parameters(
+        # Missing path.
+        dict(
+            x={},
+            paths=["test"],
+            missing="test",
+        ),
+        # OK.
+        dict(x={"test": 123}, paths=["test"], missing=None),
+        # OK.
+        dict(x={"00": {"10": 123}}, paths=["00/10"], missing=None),
+        # Missing '00/11'.
+        dict(x={"00": {"10": 123}}, paths=["00/10", "00/11"], missing="00/11"),
+    )
+    def test_basic(self, x: Nested[Tensor], paths: Sequence[str], missing: Optional[str]):
+        if missing is not None:
+            ctx = self.assertRaisesRegex(ValueError, missing)
+        else:
+            ctx = contextlib.nullcontext()
+
+        with ctx:
+            validate_contains_paths(x, paths=paths)
 
 
 if __name__ == "__main__":

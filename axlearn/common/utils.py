@@ -444,6 +444,12 @@ def with_sharding_constraint(x, shardings):
     return jax.lax.with_sharding_constraint(x, shardings)
 
 
+def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> NestedTensor:
+    if partition_spec is None:
+        return x
+    return with_sharding_constraint(x, PartitionSpec(*partition_spec))
+
+
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:
     """Replicates and converts Tensors in `x` to local DeviceArrays.
 
@@ -1419,3 +1425,37 @@ class DeviceUsage:
     hbm_memory_usage_bytes: Optional[int] = None
     hbm_memory_total_bytes: Optional[int] = None
     hbm_memory_bandwidth_utilization: Optional[float] = None
+
+
+def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] = None) -> Tensor:
+    """Computes a mask over sequence positions for each given length.
+
+    Args:
+        lengths: [...]. int32
+        max_len: T, int
+        dtype: outputs dtype.
+
+    Returns:
+        Tensor [..., T]. 1 is valid and 0 is padding.
+    """
+    if dtype is None:
+        dtype = lengths.dtype
+
+    prefix_axis = tuple(range(lengths.ndim))
+    # [..., T]
+    sequence = jnp.expand_dims(jnp.arange(max_len), axis=prefix_axis)
+    # [..., 1]
+    lengths = lengths[..., jnp.newaxis]
+    return (sequence < lengths).astype(dtype)
+
+
+def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
+    """Raises ValueError if any of the given `paths` are not present in `x`."""
+    for path in paths:
+        try:
+            get_recursively(x, path)
+        except KeyError as e:
+            raise ValueError(
+                f"Input is expected to contain '{path}'; "
+                f"instead, it contains: '{jax.tree_structure(x)}'."
+            ) from e
